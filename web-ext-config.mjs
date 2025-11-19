@@ -5,8 +5,8 @@ export default {
         "Cargo.lock",
         "Cargo.toml",
         "target/",
-        "pkg/faster_vulcan_captcha.d.ts",
-        "pkg/faster_vulcan_captcha_bg.wasm.d.ts",
+        "pkg/wasm_for_vulcan_bg.wasm.d.ts",
+        "pkg/wasm_for_vulcan.d.ts",
         "pkg/package.json",
     ],
 };

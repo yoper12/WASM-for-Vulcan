@@ -22,7 +22,7 @@
     "host_permissions": ["https://eduvulcan.pl/*"],
     "content_scripts": [
         {
-            "matches": ["https://eduvulcan.pl/logowanie*"],
+            "matches": ["https://eduvulcan.pl/logowanie*", "https://eduvulcan.pl/utworzKonto*"],
             "js": ["src/loader.js"],
             "css": ["src/style.css"],
             "run_at": "document_end"
