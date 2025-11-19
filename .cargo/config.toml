@@ -1,2 +1,9 @@
 [build]
-rustflags = ["-C", "target-feature=+simd128"]
+rustflags = [
+    "-C", "target-feature=+simd128",
+    "-C", "codegen-units=1",
+    "-C", "opt-level=3"
+]
+
+[profile.release]
+panic = "abort"
