@@ -1,0 +1,34 @@
+name: Publish release
+
+on:
+  push:
+    tags: ["*"]
+
+permissions:
+  contents: write
+
+jobs:
+  buildAndPublish:
+    name: Build and publish zip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+      - name: Install wasm-pack
+        run: |
+          cargo install wasm-pack
+      - name: Install web-ext
+        run: |
+          npm install --global web-ext
+      - name: Build the project
+        run: |
+          wasm-pack build --target web
+          web-ext build
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            web-ext-artifacts/*.zip
