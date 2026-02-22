@@ -1,219 +1,170 @@
 (async () => {
-    const settings = await new Promise((resolve) => {
-        chrome.storage.local.get(["extensionEnabled", "onlyIfNeeded"], resolve);
-    });
-    const extensionEnabled = settings.extensionEnabled !== false;
+    const settings = await new Promise((resolve) =>
+        chrome.storage.local.get(["extensionEnabled", "onlyIfNeeded"], resolve),
+    );
+
+    if (settings.extensionEnabled === false) return;
+
     const onlyIfNeeded = settings.onlyIfNeeded !== false;
 
-    if (!extensionEnabled) {
-        return;
+    function isolateElement(id, newId) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.id = newId;
+        const dummy = document.createElement(el.tagName);
+        dummy.id = id;
+        dummy.style.display = "none";
+        el.parentNode.insertBefore(dummy, el);
     }
 
-    const wasmJsUrl = chrome.runtime.getURL("pkg/wasm_for_vulcan.js");
-    const wasmBgUrl = chrome.runtime.getURL(
-        "pkg/wasm_for_vulcan_bg.wasm"
-    );
+    function restoreElement(tempId, originalId) {
+        const el = document.getElementById(tempId);
+        if (!el) return null;
+        document.getElementById(originalId)?.remove();
+        el.id = originalId;
+        return el;
+    }
 
     function sabotage(wrapper) {
         if (wrapper.dataset.sabotaged) return;
 
-        console.log("Neutralizowanie oryginalnej captchy...");
-
-        if (!wrapper.dataset.originalRounds) {
+        if (!wrapper.dataset.originalRounds)
             wrapper.dataset.originalRounds = wrapper.dataset.rounds;
-        }
 
         wrapper.dataset.rounds = "0";
 
-        const input = document.getElementById("captcha-response");
-        if (input) {
-            input.id = "captcha-response-hijacked";
-        }
+        isolateElement("captcha-response", "captcha-response-hijacked");
+        isolateElement(
+            "captcha-progress-wrapper",
+            "captcha-progress-wrapper-wasm",
+        );
+        isolateElement(
+            "captcha-success-wrapper",
+            "captcha-success-wrapper-wasm",
+        );
+
+        document.querySelectorAll(".captcha-input").forEach((el) => {
+            el.classList.replace("captcha-input", "captcha-input-wasm");
+            el.disabled = true;
+        });
 
         wrapper.dataset.sabotaged = "true";
     }
 
-    function runSolverInWorker() {
+    function solve() {
         const wrapper = document.querySelector("div.captcha-wrapper");
         if (!wrapper) return;
 
         sabotage(wrapper);
-
         wrapper.parentElement?.classList.add("visible");
 
-        const challenge = wrapper.dataset.challenge;
-        const difficulty = parseInt(wrapper.dataset.difficulty);
+        const { challenge, difficulty } = wrapper.dataset;
         const rounds = parseInt(
-            wrapper.dataset.originalRounds || wrapper.dataset.rounds
+            wrapper.dataset.originalRounds || wrapper.dataset.rounds,
         );
-
-        const responseInput =
-            document.getElementById("captcha-response-hijacked") ||
-            document.getElementById("captcha-response");
-
-        console.log("Wykryto captchę, uruchamianie workera...");
 
         const progressFill = document.getElementById("captcha-progress-fill");
         const progressText = document.getElementById("captcha-progress-text");
         if (progressFill) progressFill.style.width = "0%";
         if (progressText) progressText.innerText = "0%";
 
-        const workerCode = `
-            import init, { find_single_nonce } from "${wasmJsUrl}";
-
-            self.onmessage = async (e) => {
-                const { type, payload } = e.data;
-
-                if (type === 'SOLVE') {
-                    const { challenge, difficulty, rounds, wasmBgUrl } = payload;
-
-                    try {
-                        await init(wasmBgUrl);
-
-                        let currentBase = challenge;
-                        let results = [];
-
-                        for (let i = 0; i < rounds; i++) {
-                            const nonce = find_single_nonce(currentBase, difficulty);
-
-                            results.push(nonce);
-
-                            currentBase += nonce;
-
-                            self.postMessage({
-                                type: 'PROGRESS',
-                                current: i + 1,
-                                total: rounds
-                            });
-                        }
-
-                        self.postMessage({
-                            type: 'SUCCESS',
-                            solution: results.join(';')
-                        });
-
-                    } catch (err) {
-                        self.postMessage({ type: 'ERROR', error: err.toString() });
-                    }
-                }
-            };
-        `;
-
-        const blob = new Blob([workerCode], { type: "application/javascript" });
-        const workerUrl = URL.createObjectURL(blob);
-        const worker = new Worker(workerUrl, { type: "module" });
-
         const startTime = performance.now();
 
-        worker.postMessage({
-            type: "SOLVE",
-            payload: { challenge, difficulty, rounds, wasmBgUrl },
-        });
-
-        worker.onmessage = (e) => {
-            const { type, solution, error, current, total } = e.data;
+        const listener = (message) => {
+            const { type, solution, current, total } = message;
 
             if (type === "PROGRESS") {
-                const percent = Math.floor((current / total) * 100);
-
+                const percent = Math.floor((current / total) * 100) + "%";
                 requestAnimationFrame(() => {
-                    if (progressFill) progressFill.style.width = percent + "%";
-                    if (progressText) progressText.innerText = percent + "%";
+                    if (progressFill) progressFill.style.width = percent;
+                    if (progressText) progressText.innerText = percent;
                 });
-            } else if (type === "SUCCESS") {
-                const endTime = performance.now();
-                const duration = (endTime - startTime).toFixed(2);
+                return;
+            }
+
+            chrome.runtime.onMessage.removeListener(listener);
+
+            if (type === "SUCCESS") {
+                const duration = (performance.now() - startTime).toFixed(2);
 
                 if (progressFill) progressFill.style.width = "100%";
                 if (progressText) progressText.innerText = "100%";
 
-                const successLabel = document.querySelector(
-                    ".captcha-wrapper .captcha-success-label"
+                const label = document.querySelector(
+                    ".captcha-wrapper .captcha-success-label",
                 );
-                if (successLabel) {
-                    successLabel.textContent = `Pomyślnie rozwiązano w ${duration} ms dzięki WASM!`;
-                }
+                if (label)
+                    label.textContent = `Pomyślnie rozwiązano w ${duration} ms dzięki WASM!`;
 
-                console.log(
-                    "%cℹ️Błąd \"Uncaught (in promise) TypeError: Cannot set properties of null (setting 'value')\" jest przewidziany. Można go zignorować.",
-                    "color: lime; font-weight: bold;"
+                const responseInput = restoreElement(
+                    "captcha-response-hijacked",
+                    "captcha-response",
                 );
-                console.log(`Captcha rozwiązana w ${duration} ms:`, solution);
+                if (responseInput) responseInput.value = solution;
 
-                if (responseInput) {
-                    responseInput.value = solution;
-                    // przywracamy poprzedni stan
-                    responseInput.id = "captcha-response";
-                }
-
-                const progress = document.getElementById(
-                    "captcha-progress-wrapper"
-                );
-                const success = document.getElementById(
-                    "captcha-success-wrapper"
+                const progress = restoreElement(
+                    "captcha-progress-wrapper-wasm",
+                    "captcha-progress-wrapper",
                 );
                 if (progress) progress.classList.remove("active");
+
+                const success = restoreElement(
+                    "captcha-success-wrapper-wasm",
+                    "captcha-success-wrapper",
+                );
                 if (success) success.classList.add("active");
 
                 document
-                    .querySelectorAll(".captcha-input")
-                    .forEach((el) => (el.disabled = false));
-
-                worker.terminate();
-                URL.revokeObjectURL(workerUrl);
+                    .querySelectorAll(".captcha-input-wasm")
+                    .forEach((el) => {
+                        el.disabled = false;
+                        el.classList.replace(
+                            "captcha-input-wasm",
+                            "captcha-input",
+                        );
+                    });
             } else if (type === "ERROR") {
-                console.error("Błąd obliczeń WASM:", error);
+                sessionStorage.setItem("wasm_failed", "true");
+                window.location.reload();
             }
         };
 
-        worker.onerror = (err) => {
-            console.error(
-                "Krytyczny błąd Workera: ",
-                err,
-                "\nAwaryjne uruchamianie oryginalnego skryptu."
-            );
-            sessionStorage.setItem("wasm_failed", "true");
-            window.location.reload();
-        };
+        chrome.runtime.onMessage.addListener(listener);
+        chrome.runtime.sendMessage({
+            type: "SOLVE",
+            payload: { challenge, difficulty: parseInt(difficulty), rounds },
+        });
     }
 
-    if (!sessionStorage.getItem("wasm_failed")) {
-        function isCaptchaVisible() {
-            const wrapper = document.querySelector("div.captcha-wrapper");
-            return wrapper && wrapper.offsetParent !== null;
-        }
-
-        let started = false;
-        function tryLaunch() {
-            const wrapper = document.querySelector("div.captcha-wrapper");
-            const visible = isCaptchaVisible();
-
-            if (wrapper && (visible || !onlyIfNeeded)) {
-                runSolverInWorker();
-                started = true;
-            }
-        }
-
-        tryLaunch();
-
-        const observer = new MutationObserver(() => {
-            const wrapper = document.querySelector("div.captcha-wrapper");
-            if (wrapper) sabotage(wrapper);
-
-            if (!started) tryLaunch();
-            if (started) observer.disconnect();
-        });
-
-        observer.observe(document.body, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-            attributeFilter: ["style", "class"],
-        });
-    } else {
-        console.warn(
-            "Niestety, WASM zawodzi. Uruchamiany jest oryginalny skrypt Vulcana."
-        );
+    if (sessionStorage.getItem("wasm_failed")) {
         sessionStorage.removeItem("wasm_failed");
+        return;
     }
+
+    let started = false;
+
+    function tryLaunch() {
+        const wrapper = document.querySelector("div.captcha-wrapper");
+        if (!wrapper) return;
+        if (onlyIfNeeded && !wrapper.offsetParent) return;
+        solve();
+        started = true;
+    }
+
+    tryLaunch();
+
+    const observer = new MutationObserver(() => {
+        const wrapper = document.querySelector("div.captcha-wrapper");
+        if (wrapper && (!onlyIfNeeded || wrapper.offsetParent))
+            sabotage(wrapper);
+        if (!started) tryLaunch();
+        if (started) observer.disconnect();
+    });
+
+    observer.observe(document.body, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        attributeFilter: ["style", "class"],
+    });
 })();
